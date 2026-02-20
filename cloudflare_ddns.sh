@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Cloudflare DDNS 更新脚本 (多域名支持版)
-# 支持在 RECORD_NAME 中输入多个域名（用空格或逗号分隔）
+# Cloudflare DDNS 更新脚本 (多域名 + 独立小黄云控制版)
 
 CFG_DIR="$HOME/.cloudflare_ddns"
 CONFIG_FILE="$CFG_DIR/config"
@@ -53,7 +52,7 @@ init_config() {
 
     usage() {
         echo
-        echo "Cloudflare DDNS 更新脚本 (多域名版)"
+        echo "Cloudflare DDNS 更新脚本"
         echo
         echo "option:"
         echo "  -h, --help            显示此帮助信息"
@@ -103,8 +102,7 @@ init_config() {
     read -p "2. 请输入Zone ID: " ZONE_ID
     [ -z "$ZONE_ID" ] && { echo "错误：Zone ID不能为空！"; exit 1; }
     
-    # 提示用户可以输入多个域名
-    read -p "3. 请输入要更新的域名(多个域名用空格分隔，如 a.com b.com): " RECORD_NAME
+    read -p "3. 请输入要更新的域名(多个域名用逗号分隔，如 a.com,b.com): " RECORD_NAME
     RECORD_NAME=${RECORD_NAME:-ddns.example.com}
     
     read -p "4. 记录类型 [A/AAAA] (默认: A): " RECORD_TYPE
@@ -113,7 +111,7 @@ init_config() {
     read -p "5. TTL值 [1-86400] (默认: 60): " TTL
     TTL=${TTL:-60}
 
-    read -p "6. 是否开启代理(小黄云) [true/false] (默认: false): " PROXIED
+    read -p "6. 是否开启代理(小黄云) (多个用逗号分隔，如 false,true) (默认: false): " PROXIED
     PROXIED=${PROXIED:-false}
     
     read -p "7. 日志文件路径 (默认: ${CFG_DIR}/cloudflare_ddns.log): " input_log
@@ -181,7 +179,7 @@ main() {
     
     log "===== DDNS 批量更新任务开始 ====="
     
-    # 1. 获取公网IP (只需要获取一次)
+    # 获取公网IP
     log "正在获取公网IP地址..." 1
     CURRENT_IP=$(get_ip)
     if [ -z "$CURRENT_IP" ]; then
@@ -191,32 +189,37 @@ main() {
     fi
     log "当前公网IP: $CURRENT_IP"
     
-    # 2. 将逗号替换为空格，方便循环解析多个域名
-    RECORD_NAMES_LIST="${RECORD_NAME//,/ }"
+    # 核心修改：将域名和代理状态都转换成数组，以支持一一对应
+    RECORD_NAMES_ARRAY=(${RECORD_NAME//,/ })
+    PROXIED_ARRAY=(${PROXIED//,/ })
     
-    # 3. 循环处理每一个域名
-    for current_domain in $RECORD_NAMES_LIST; do
+    # 循环处理每一个域名
+    for i in "${!RECORD_NAMES_ARRAY[@]}"; do
+        current_domain="${RECORD_NAMES_ARRAY[$i]}"
+        # 获取对应的代理状态，如果没填，默认取 false
+        current_proxied="${PROXIED_ARRAY[$i]:-false}"
+        
         log "----------------------------------------"
-        log "⏳ 正在处理域名: $current_domain"
+        log "⏳ 正在处理: $current_domain (小黄云设定: $current_proxied)"
         
         RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$RECORD_TYPE")
         
         if ! jq -e '.success' <<< "$RECORD_INFO" >/dev/null; then
             ERROR_MSG=$(jq -r '.errors[0].message' <<< "$RECORD_INFO" 2>/dev/null || echo "未知错误")
             log "❌ [$current_domain] API错误: $ERROR_MSG"
-            continue # 跳过当前域名，继续处理下一个
+            continue 
         fi
         
         RECORD_COUNT=$(jq -r '.result | length' <<< "$RECORD_INFO")
         
-        # 记录不存在，创建新记录
+        # 如果记录不存在，直接创建
         if [ "$RECORD_COUNT" -eq 0 ] || [ "$RECORD_COUNT" = "null" ]; then
             log "⚠️ 未找到 [$current_domain] 的记录，正在创建..."
-            CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$PROXIED}"
+            CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
             CREATE_RESULT=$(cf_api_request "POST" "dns_records" "$CREATE_DATA")
             
             if jq -e '.success' <<< "$CREATE_RESULT" >/dev/null; then
-                log "✅ 创建成功: $current_domain -> $CURRENT_IP (小黄云: $PROXIED)"
+                log "✅ 创建成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
             else
                 ERROR_MSG=$(jq -r '.errors[0].message' <<< "$CREATE_RESULT" 2>/dev/null || echo "未知错误")
                 log "❌ 创建失败 [$current_domain]: $ERROR_MSG"
@@ -224,19 +227,21 @@ main() {
             continue
         fi
         
-        # 记录已存在，执行更新逻辑
+        # 记录已存在，获取当前的 IP 和 小黄云状态
         RECORD_ID=$(jq -r '.result[0].id' <<< "$RECORD_INFO")
         EXISTING_IP=$(jq -r '.result[0].content' <<< "$RECORD_INFO")
+        EXISTING_PROXIED=$(jq -r '.result[0].proxied' <<< "$RECORD_INFO")
         
-        if [ "$CURRENT_IP" = "$EXISTING_IP" ]; then
-            log "🔄 [$current_domain] IP未变化 ($EXISTING_IP)，无需更新"
+        # 双重校验：不仅检查 IP 是否变化，还检查小黄云状态是否和你在 config 里设定的不一致
+        if [ "$CURRENT_IP" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
+            log "🔄 [$current_domain] IP 和 小黄云状态 均未变化，无需更新"
         else
-            log "🔄 [$current_domain] IP发生变化: $EXISTING_IP → $CURRENT_IP，更新中..."
-            UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$PROXIED}"
+            log "🔄 [$current_domain] 需要更新 (IP: $EXISTING_IP → $CURRENT_IP | 小黄云: $EXISTING_PROXIED → $current_proxied)"
+            UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
             UPDATE_RESULT=$(cf_api_request "PUT" "dns_records/$RECORD_ID" "$UPDATE_DATA")
             
             if jq -e '.success' <<< "$UPDATE_RESULT" >/dev/null; then
-                log "✅ 更新成功: $current_domain -> $CURRENT_IP (小黄云: $PROXIED)"
+                log "✅ 更新成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
             else
                 ERROR_MSG=$(jq -r '.errors[0].message' <<< "$UPDATE_RESULT" 2>/dev/null || echo "未知错误")
                 log "❌ 更新失败 [$current_domain]: $ERROR_MSG"
