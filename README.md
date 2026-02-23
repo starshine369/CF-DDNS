@@ -103,20 +103,6 @@ PROXIED='false,true'
 ```
 注：PROXIED 的值必须与 RECORD_NAME 里的域名一一对应。上面的例子代表 ddns1 关闭小黄云，ddns2 开启小黄云。
 
-高级调试选项
-如果你想在脚本中添加调试输出，可以在脚本开头添加：
-
-启用详细调试
-set -x  # 启用命令跟踪
-或者
-export DEBUG=true
-在脚本中
-if [ "$DEBUG" = "true" ]; then # 输出调试信息 fi
-然后在 crontab 中设置环境变量：
-```bash
-*/5 * * * * DEBUG=true /usr/local/bin/cloudflare_ddns.sh >> /root/.cloudflare_ddns/cloudflare_ddns.log 2>&1
-```
-
 注意事项
 
 权限问题：确保脚本和日志文件有正确的读写权限
