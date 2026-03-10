@@ -36,8 +36,8 @@ curl -# -O [https://raw.githubusercontent.com/starshine369/CF-DDNS/refs/heads/ma
 
 ▶ 正在配置第 1 个主域名：
   输入 Zone ID: [你的区域ID]
-  输入该域名的备注 (如 starshine369.top): [随意备注]
-  输入子域名 (多个用逗号分隔。如 nas.a.com,web.a.com): v4.a.com,v6.a.com
+  输入该域名的备注 (如 example.com): [随意备注]
+  输入子域名 (多个用逗号分隔。如 nas.example.com,web.example.com): v4.a.com,v6.a.com
   对应的记录类型 (填写 A 或 AAAA。如 A,AAAA) (默认全为 A): A,AAAA
   对应的代理状态(小黄云) (如 false,true) (默认全为 false): false,true
   ✅ 第 1 个主域名配置已记录。
