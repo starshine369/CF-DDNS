@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cloudflare DDNS 更新脚本 (多域名 + 自动依赖 + 全自动定时任务版)
+# Cloudflare DDNS 更新脚本 (混合双栈多域名 + 自动依赖 + 全自动定时任务版)
 
 CFG_DIR="$HOME/.cloudflare_ddns"
 CONFIG_FILE="$CFG_DIR/config"
@@ -27,7 +27,6 @@ delete_config() {
     local config_dir=$(dirname "$CONFIG_FILE")
     local deleted_files=()
     
-    # 清理相关定时任务
     if command -v crontab &> /dev/null; then
         local tmp_cron=$(mktemp)
         crontab -l 2>/dev/null | grep -v "cloudflare_ddns" > "$tmp_cron"
@@ -44,7 +43,6 @@ delete_config() {
         rm -f "$LOG_FILE"
         deleted_files+=("日志文件: $LOG_FILE")
     fi
-    # 清理可能存在的历史切割日志
     find "$CFG_DIR" -name "cloudflare_ddns.log.*" -delete 2>/dev/null
     
     if [ -d "$config_dir" ]; then
@@ -67,7 +65,6 @@ setup_cron() {
     setup_cron_task=${setup_cron_task:-Y}
     
     if [[ "$setup_cron_task" =~ ^[Yy]$ ]]; then
-        # 1. 检测并安装 cron/crontab
         if ! command -v crontab &> /dev/null; then
             echo "⏳ 检测到未安装 cron(定时任务) 服务，正在自动安装..."
             local SUDO=""
@@ -98,7 +95,6 @@ setup_cron() {
             fi
         fi
 
-        # 2. 将脚本本体复制到 /usr/local/bin 方便全局调用
         local SCRIPT_TARGET="/usr/local/bin/cloudflare_ddns.sh"
         local CURRENT_SCRIPT=$(realpath "$0")
         local SUDO=""
@@ -110,22 +106,17 @@ setup_cron() {
             echo "✅ 脚本已自动部署到: $SCRIPT_TARGET"
         fi
 
-        # 3. 设置定时任务规则
         local tmp_cron=$(mktemp)
-        # 提取现有任务 (过滤掉旧的 ddns 任务防止重复添加)
         crontab -l 2>/dev/null | grep -v "cloudflare_ddns" > "$tmp_cron"
         
-        # 追加每5分钟执行的规则
         echo "*/5 * * * * $SCRIPT_TARGET >> $LOG_FILE 2>&1" >> "$tmp_cron"
         echo "✅ 定时更新任务已添加 (频率: 每 5 分钟)"
         
-        # 4. 询问日志清理
         read -p "❓ 是否配置日志自动清理 (每天凌晨切割日志并清理7天前的记录)? [Y/n]: " setup_log_clean
         setup_log_clean=${setup_log_clean:-Y}
         if [[ "$setup_log_clean" =~ ^[Yy]$ ]]; then
             local log_dir=$(dirname "$LOG_FILE")
             local log_base=$(basename "$LOG_FILE")
-            # 组合指令：拷贝备份当天日志 -> 清空主日志 -> 删除7天前的备份文件 (注意 % 需在 crontab 中转义)
             local clean_cmd="0 0 * * * cp $LOG_FILE $LOG_FILE.\$(date +\\%Y\\%m\\%d) && > $LOG_FILE && find $log_dir -name \"$log_base.*\" -mtime +7 -delete"
             echo "$clean_cmd" >> "$tmp_cron"
             echo "✅ 日志清理任务已添加 (保留7天)"
@@ -134,7 +125,7 @@ setup_cron() {
         crontab "$tmp_cron"
         rm -f "$tmp_cron"
         echo "──────────────────────────────────────────────────"
-        echo "🎉 所有定时调度配置完毕！脚本将在后台默默为你服务。"
+        echo "🎉 所有定时调度配置完毕！"
     fi
 }
 
@@ -143,7 +134,7 @@ init_config() {
 
     usage() {
         echo
-        echo "Cloudflare DDNS 更新脚本"
+        echo "Cloudflare DDNS 更新脚本 (混合双栈版)"
         echo "option:"
         echo "  -h, --help            显示帮助信息"
         echo "  -reconfig             重置配置并重新运行向导"
@@ -176,18 +167,15 @@ init_config() {
     
     clear
     echo "╔══════════════════════════════════════════════════╗"
-    echo "║        Cloudflare DDNS 终极部署向导              ║"
+    echo "║       Cloudflare DDNS 终极部署向导 (双栈版)      ║"
     echo "╚══════════════════════════════════════════════════╝"
-    echo "提示：此版本支持多主域名、独立代理控制及全自动守护"
+    echo "提示：此版本支持为每个子域名单独指定解析 IPv4(A) 或 IPv6(AAAA)"
     echo "──────────────────────────────────────────────────"
     
     read -p "1. 请输入Cloudflare API Token: " API_TOKEN
     [ -z "$API_TOKEN" ] && { echo "错误：API Token不能为空！"; exit 1; }
     
-    read -p "2. 全局记录类型 [A/AAAA] (默认: A): " RECORD_TYPE
-    RECORD_TYPE=${RECORD_TYPE:-A}
-    
-    read -p "3. 全局TTL值 [1-86400] (默认: 60): " TTL
+    read -p "2. 全局TTL值 [1-86400] (默认: 60): " TTL
     TTL=${TTL:-60}
 
     echo "──────────────────────────────────────────────────"
@@ -196,6 +184,7 @@ init_config() {
     declare -a ZONE_IDS=()
     declare -a ZONE_REMARKS=()
     declare -a RECORD_NAMES=()
+    declare -a RECORD_TYPES_SETTINGS=()
     declare -a PROXIED_SETTINGS=()
 
     local zone_count=1
@@ -209,15 +198,19 @@ init_config() {
         read -p "  输入该域名的备注 (如 starshine369.top): " current_remark
         current_remark=${current_remark:-"未命名域名_$zone_count"}
         
-        read -p "  输入该 Zone 下要更新的子域名 (多个用逗号分隔，如 ddns.a.com,vps.a.com): " current_records
+        read -p "  输入子域名 (多个用逗号分隔，如 v4.a.com,v6.a.com): " current_records
         [ -z "$current_records" ] && { echo "  ❌ 子域名不能为空，请重新配置当前 Zone。"; continue; }
         
-        read -p "  对应的代理状态(小黄云) (多个用逗号分隔，与上面对应，如 false,true) (默认: false): " current_proxieds
+        read -p "  对应的记录类型 (如 A,AAAA) (默认全为 A): " current_types
+        current_types=${current_types:-A}
+
+        read -p "  对应的代理状态 (如 false,true) (默认全为 false): " current_proxieds
         current_proxieds=${current_proxieds:-false}
 
         ZONE_IDS+=("$current_zone_id")
         ZONE_REMARKS+=("$current_remark")
         RECORD_NAMES+=("$current_records")
+        RECORD_TYPES_SETTINGS+=("$current_types")
         PROXIED_SETTINGS+=("$current_proxieds")
 
         echo "  ✅ 第 $zone_count 个主域名 [$current_remark] 配置已记录。"
@@ -231,44 +224,44 @@ init_config() {
     done
     
     echo "──────────────────────────────────────────────────"
-    read -p "4. 日志文件路径 (默认: ${CFG_DIR}/cloudflare_ddns.log): " input_log
+    read -p "3. 日志文件路径 (默认: ${CFG_DIR}/cloudflare_ddns.log): " input_log
     LOG_FILE=${input_log:-"${CFG_DIR}/cloudflare_ddns.log"}
     
     mkdir -p "$(dirname "$LOG_FILE")"
-    echo "===== DDNS 多域名配置创建于 $(date) =====" > "$LOG_FILE"
+    echo "===== DDNS 多域名双栈配置创建于 $(date) =====" > "$LOG_FILE"
     
     echo "#!/bin/bash" > "$CONFIG_FILE"
-    echo "# Cloudflare DDNS 配置文件 (多域名+定时版)" >> "$CONFIG_FILE"
+    echo "# Cloudflare DDNS 配置文件 (双栈多域名版)" >> "$CONFIG_FILE"
     echo "API_TOKEN='$API_TOKEN'" >> "$CONFIG_FILE"
-    echo "RECORD_TYPE='$RECORD_TYPE'" >> "$CONFIG_FILE"
     echo "TTL='$TTL'" >> "$CONFIG_FILE"
     echo "LOG_FILE='$LOG_FILE'" >> "$CONFIG_FILE"
     echo "" >> "$CONFIG_FILE"
     echo "$(declare -p ZONE_IDS)" >> "$CONFIG_FILE"
     echo "$(declare -p ZONE_REMARKS)" >> "$CONFIG_FILE"
     echo "$(declare -p RECORD_NAMES)" >> "$CONFIG_FILE"
+    echo "$(declare -p RECORD_TYPES_SETTINGS)" >> "$CONFIG_FILE"
     echo "$(declare -p PROXIED_SETTINGS)" >> "$CONFIG_FILE"
     
     chmod 600 "$CONFIG_FILE"
     echo "✅ 所有配置参数已保存到: $CONFIG_FILE"
     
-    # 引导执行定时任务配置
     setup_cron
 }
 
 get_ip() {
+    local ip_version=$1
     local ip_services
     local max_retry=3
     
-    if [ "$RECORD_TYPE" = "A" ]; then
-        ip_services=("https://api.ipify.org" "https://ipv4.icanhazip.com" "https://checkip.amazonaws.com")
+    if [ "$ip_version" = "4" ]; then
+        ip_services=("https://ipv4.icanhazip.com" "https://api.ipify.org" "https://checkip.amazonaws.com")
     else
-        ip_services=("https://api64.ipify.org" "https://ipv6.icanhazip.com" "https://v6.ident.me")
+        ip_services=("https://ipv6.icanhazip.com" "https://api64.ipify.org" "https://v6.ident.me")
     fi
     
     for service in "${ip_services[@]}"; do
         for ((i=1; i<=max_retry; i++)); do
-            ip=$(curl -${RECORD_TYPE/#A/4} -s --fail --max-time 10 "$service" 2>/dev/null)
+            ip=$(curl -$ip_version -s --fail --max-time 10 "$service" 2>/dev/null)
             if [ -n "$ip" ]; then
                 echo "$ip"
                 return 0
@@ -296,37 +289,67 @@ cf_api_request() {
 main() {
     init_config "$@"
     
-    log "===== DDNS 多域名批量更新任务开始 ====="
+    log "===== DDNS 混合双栈批量更新任务开始 ====="
     
-    log "正在获取公网IP地址..." 1
-    CURRENT_IP=$(get_ip)
-    if [ -z "$CURRENT_IP" ]; then
-        log "❌ 错误：无法获取公网IP地址，请检查网络连接"
+    # 统一获取本机的 IPv4 和 IPv6 地址
+    log "正在检测本机网络环境..." 1
+    CURRENT_IPV4=$(get_ip 4)
+    CURRENT_IPV6=$(get_ip 6)
+    
+    [ -n "$CURRENT_IPV4" ] && log "本机 IPv4: $CURRENT_IPV4" || log "本机 IPv4: 未获取到"
+    [ -n "$CURRENT_IPV6" ] && log "本机 IPv6: $CURRENT_IPV6" || log "本机 IPv6: 未获取到"
+    
+    if [ -z "$CURRENT_IPV4" ] && [ -z "$CURRENT_IPV6" ]; then
+        log "❌ 错误：无法获取任何公网IP地址，请检查网络连接！"
         log "===== DDNS 更新失败 ====="
         return 1
     fi
-    log "当前公网IP: $CURRENT_IP"
     
     for idx in "${!ZONE_IDS[@]}"; do
         CURRENT_ZONE_ID="${ZONE_IDS[$idx]}"
         REMARK="${ZONE_REMARKS[$idx]}"
         RECORDS_STR="${RECORD_NAMES[$idx]}"
+        TYPES_STR="${RECORD_TYPES_SETTINGS[$idx]}"
         PROXIED_STR="${PROXIED_SETTINGS[$idx]}"
         
         log "========================================"
         log "🌐 开始处理主域名: $REMARK"
         
         RECORD_NAMES_ARRAY=(${RECORDS_STR//,/ })
+        RECORD_TYPES_ARRAY=(${TYPES_STR//,/ })
         PROXIED_ARRAY=(${PROXIED_STR//,/ })
         
         for j in "${!RECORD_NAMES_ARRAY[@]}"; do
             current_domain="${RECORD_NAMES_ARRAY[$j]}"
+            
+            # 解析记录类型，默认为 A，并自动转为大写
+            current_type="${RECORD_TYPES_ARRAY[$j]:-A}"
+            current_type=$(echo "$current_type" | tr 'a-z' 'A-Z')
+            
+            # 代理状态，默认为 false
             current_proxied="${PROXIED_ARRAY[$j]:-false}"
             
-            log "-----------------"
-            log "⏳ 正在检查: $current_domain (小黄云: $current_proxied)"
+            # 根据记录类型选择目标 IP
+            local target_ip=""
+            if [ "$current_type" = "AAAA" ]; then
+                target_ip="$CURRENT_IPV6"
+                if [ -z "$target_ip" ]; then
+                    log "⚠️ [$current_domain] 需要 AAAA 记录，但未获取到本机的 IPv6 地址，已跳过。"
+                    continue
+                fi
+            else
+                current_type="A" # 防呆纠错，非 AAAA 一律视为 A
+                target_ip="$CURRENT_IPV4"
+                if [ -z "$target_ip" ]; then
+                    log "⚠️ [$current_domain] 需要 A 记录，但未获取到本机的 IPv4 地址，已跳过。"
+                    continue
+                fi
+            fi
             
-            RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$RECORD_TYPE")
+            log "-----------------"
+            log "⏳ 正在检查: $current_domain (类型: $current_type | 小黄云: $current_proxied)"
+            
+            RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$current_type")
             
             if ! jq -e '.success' <<< "$RECORD_INFO" >/dev/null; then
                 ERROR_MSG=$(jq -r '.errors[0].message' <<< "$RECORD_INFO" 2>/dev/null || echo "未知错误")
@@ -337,12 +360,12 @@ main() {
             RECORD_COUNT=$(jq -r '.result | length' <<< "$RECORD_INFO")
             
             if [ "$RECORD_COUNT" -eq 0 ] || [ "$RECORD_COUNT" = "null" ]; then
-                log "⚠️ 未找到记录，正在创建..."
-                CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+                log "⚠️ 未找到 $current_type 记录，正在创建..."
+                CREATE_DATA="{\"type\":\"$current_type\",\"name\":\"$current_domain\",\"content\":\"$target_ip\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
                 CREATE_RESULT=$(cf_api_request "POST" "dns_records" "$CREATE_DATA")
                 
                 if jq -e '.success' <<< "$CREATE_RESULT" >/dev/null; then
-                    log "✅ 创建成功 -> $CURRENT_IP"
+                    log "✅ 创建成功 -> $target_ip"
                 else
                     ERROR_MSG=$(jq -r '.errors[0].message' <<< "$CREATE_RESULT" 2>/dev/null || echo "未知错误")
                     log "❌ 创建失败: $ERROR_MSG"
@@ -354,11 +377,11 @@ main() {
             EXISTING_IP=$(jq -r '.result[0].content' <<< "$RECORD_INFO")
             EXISTING_PROXIED=$(jq -r '.result[0].proxied' <<< "$RECORD_INFO")
             
-            if [ "$CURRENT_IP" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
+            if [ "$target_ip" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
                 log "🔄 无需更新 (IP与代理状态均一致)"
             else
-                log "🔄 正在更新 (IP: $EXISTING_IP → $CURRENT_IP | 小黄云: $EXISTING_PROXIED → $current_proxied)"
-                UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+                log "🔄 正在更新 (IP: $EXISTING_IP → $target_ip | 小黄云: $EXISTING_PROXIED → $current_proxied)"
+                UPDATE_DATA="{\"type\":\"$current_type\",\"name\":\"$current_domain\",\"content\":\"$target_ip\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
                 UPDATE_RESULT=$(cf_api_request "PUT" "dns_records/$RECORD_ID" "$UPDATE_DATA")
                 
                 if jq -e '.success' <<< "$UPDATE_RESULT" >/dev/null; then
