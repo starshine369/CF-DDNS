@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cloudflare DDNS 更新脚本 (多域名 + 独立小黄云控制版)
+# Cloudflare DDNS 更新脚本 (多主域名 + 独立小黄云控制 + 自动依赖)
 
 CFG_DIR="$HOME/.cloudflare_ddns"
 CONFIG_FILE="$CFG_DIR/config"
@@ -52,7 +52,7 @@ init_config() {
 
     usage() {
         echo
-        echo "Cloudflare DDNS 更新脚本"
+        echo "Cloudflare DDNS 更新脚本 (多域名版)"
         echo
         echo "option:"
         echo "  -h, --help            显示此帮助信息"
@@ -91,49 +91,89 @@ init_config() {
     
     clear
     echo "╔══════════════════════════════════════════════════╗"
-    echo "║            Cloudflare DDNS 配置向导              ║"
+    echo "║        Cloudflare DDNS 多域名配置向导            ║"
     echo "╚══════════════════════════════════════════════════╝"
-    echo "提示：括号内为默认值，直接按回车使用默认设置"
+    echo "提示：此版本支持同时更新多个主域名的 DNS 记录"
     echo "──────────────────────────────────────────────────"
     
     read -p "1. 请输入Cloudflare API Token: " API_TOKEN
     [ -z "$API_TOKEN" ] && { echo "错误：API Token不能为空！"; exit 1; }
     
-    read -p "2. 请输入Zone ID: " ZONE_ID
-    [ -z "$ZONE_ID" ] && { echo "错误：Zone ID不能为空！"; exit 1; }
-    
-    read -p "3. 请输入要更新的域名(多个域名用逗号分隔，如 a.com,b.com): " RECORD_NAME
-    RECORD_NAME=${RECORD_NAME:-ddns.example.com}
-    
-    read -p "4. 记录类型 [A/AAAA] (默认: A): " RECORD_TYPE
+    read -p "2. 全局记录类型 [A/AAAA] (默认: A): " RECORD_TYPE
     RECORD_TYPE=${RECORD_TYPE:-A}
     
-    read -p "5. TTL值 [1-86400] (默认: 60): " TTL
+    read -p "3. 全局TTL值 [1-86400] (默认: 60): " TTL
     TTL=${TTL:-60}
 
-    read -p "6. 是否开启代理(小黄云) (多个用逗号分隔，如 false,true) (默认: false): " PROXIED
-    PROXIED=${PROXIED:-false}
+    echo "──────────────────────────────────────────────────"
+    echo "接下来开始配置主域名 (Zone)。你可以添加多个不同的主域名。"
     
-    read -p "7. 日志文件路径 (默认: ${CFG_DIR}/cloudflare_ddns.log): " input_log
+    # 声明存储各个Zone配置的数组
+    declare -a ZONE_IDS=()
+    declare -a ZONE_REMARKS=()
+    declare -a RECORD_NAMES=()
+    declare -a PROXIED_SETTINGS=()
+
+    local zone_count=1
+    while true; do
+        echo
+        echo "▶ 正在配置第 $zone_count 个主域名："
+        
+        read -p "  输入 Zone ID: " current_zone_id
+        [ -z "$current_zone_id" ] && { echo "  ❌ Zone ID 不能为空，请重新输入。"; continue; }
+        
+        read -p "  输入该域名的备注 (如 example.com): " current_remark
+        current_remark=${current_remark:-"未命名域名_$zone_count"}
+        
+        read -p "  输入该 Zone 下要更新的子域名 (多个用逗号分隔，如 mail.example.com,ddns.example.com): " current_records
+        [ -z "$current_records" ] && { echo "  ❌ 子域名不能为空，请重新配置当前 Zone。"; continue; }
+        
+        read -p "  对应的代理状态(小黄云) (多个用逗号分隔，如 false,true) (默认: false): " current_proxieds
+        current_proxieds=${current_proxieds:-false}
+
+        # 将当前输入的数据存入数组
+        ZONE_IDS+=("$current_zone_id")
+        ZONE_REMARKS+=("$current_remark")
+        RECORD_NAMES+=("$current_records")
+        PROXIED_SETTINGS+=("$current_proxieds")
+
+        echo "  ✅ 第 $zone_count 个主域名 [$current_remark] 配置已记录。"
+        
+        echo "──────────────────────────────────────────────────"
+        read -p "❓ 是否需要继续添加另一个主域名(Zone ID)? [y/N]: " add_more
+        case "$add_more" in
+            [yY][eE][sS]|[yY])
+                ((zone_count++))
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    
+    echo "──────────────────────────────────────────────────"
+    read -p "4. 日志文件路径 (默认: ${CFG_DIR}/cloudflare_ddns.log): " input_log
     LOG_FILE=${input_log:-"${CFG_DIR}/cloudflare_ddns.log"}
     
     mkdir -p "$(dirname "$LOG_FILE")"
-    echo "===== DDNS 配置创建于 $(date) =====" > "$LOG_FILE"
+    echo "===== DDNS 多域名配置创建于 $(date) =====" > "$LOG_FILE"
     
+    # 将配置写入文件，使用 declare -p 完美保存 Bash 数组结构
     echo "#!/bin/bash" > "$CONFIG_FILE"
-    echo "# Cloudflare DDNS 配置文件" >> "$CONFIG_FILE"
+    echo "# Cloudflare DDNS 配置文件 (多域名版)" >> "$CONFIG_FILE"
     echo "API_TOKEN='$API_TOKEN'" >> "$CONFIG_FILE"
-    echo "ZONE_ID='$ZONE_ID'" >> "$CONFIG_FILE"
-    echo "RECORD_NAME='$RECORD_NAME'" >> "$CONFIG_FILE"
     echo "RECORD_TYPE='$RECORD_TYPE'" >> "$CONFIG_FILE"
     echo "TTL='$TTL'" >> "$CONFIG_FILE"
-    echo "PROXIED='$PROXIED'" >> "$CONFIG_FILE"
     echo "LOG_FILE='$LOG_FILE'" >> "$CONFIG_FILE"
+    echo "" >> "$CONFIG_FILE"
+    echo "$(declare -p ZONE_IDS)" >> "$CONFIG_FILE"
+    echo "$(declare -p ZONE_REMARKS)" >> "$CONFIG_FILE"
+    echo "$(declare -p RECORD_NAMES)" >> "$CONFIG_FILE"
+    echo "$(declare -p PROXIED_SETTINGS)" >> "$CONFIG_FILE"
     
     chmod 600 "$CONFIG_FILE"
     
-    echo "──────────────────────────────────────────────────"
-    echo "✅ 配置已保存到: $CONFIG_FILE"
+    echo "✅ 所有配置已保存到: $CONFIG_FILE"
 }
 
 get_ip() {
@@ -163,7 +203,8 @@ cf_api_request() {
     local method="$1"
     local endpoint="$2"
     local data="${3:-}"
-    local url="https://api.cloudflare.com/client/v4/zones/$ZONE_ID/$endpoint"
+    # 注意：这里使用全局变量 $CURRENT_ZONE_ID 进行动态替换
+    local url="https://api.cloudflare.com/client/v4/zones/$CURRENT_ZONE_ID/$endpoint"
     
     local curl_cmd="curl -s -X $method '$url' \
         -H 'Authorization: Bearer $API_TOKEN' \
@@ -175,11 +216,10 @@ cf_api_request() {
 
 main() {
     init_config "$@"
-    PROXIED=${PROXIED:-false}
     
-    log "===== DDNS 批量更新任务开始 ====="
+    log "===== DDNS 多域名批量更新任务开始 ====="
     
-    # 获取公网IP
+    # 获取公网IP (只需要获取一次)
     log "正在获取公网IP地址..." 1
     CURRENT_IP=$(get_ip)
     if [ -z "$CURRENT_IP" ]; then
@@ -189,67 +229,77 @@ main() {
     fi
     log "当前公网IP: $CURRENT_IP"
     
-    # 将域名和代理状态都转换成数组，以支持一一对应
-    RECORD_NAMES_ARRAY=(${RECORD_NAME//,/ })
-    PROXIED_ARRAY=(${PROXIED//,/ })
-    
-    # 循环处理每一个域名
-    for i in "${!RECORD_NAMES_ARRAY[@]}"; do
-        current_domain="${RECORD_NAMES_ARRAY[$i]}"
-        # 获取对应的代理状态，如果没填，默认取 false
-        current_proxied="${PROXIED_ARRAY[$i]:-false}"
+    # 遍历所有保存的 Zone ID
+    for idx in "${!ZONE_IDS[@]}"; do
+        CURRENT_ZONE_ID="${ZONE_IDS[$idx]}"
+        REMARK="${ZONE_REMARKS[$idx]}"
+        RECORDS_STR="${RECORD_NAMES[$idx]}"
+        PROXIED_STR="${PROXIED_SETTINGS[$idx]}"
         
-        log "----------------------------------------"
-        log "⏳ 正在处理: $current_domain (小黄云设定: $current_proxied)"
+        log "========================================"
+        log "🌐 开始处理主域名: $REMARK"
         
-        RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$RECORD_TYPE")
+        # 将当前 Zone 的记录和代理状态转换为数组
+        RECORD_NAMES_ARRAY=(${RECORDS_STR//,/ })
+        PROXIED_ARRAY=(${PROXIED_STR//,/ })
         
-        if ! jq -e '.success' <<< "$RECORD_INFO" >/dev/null; then
-            ERROR_MSG=$(jq -r '.errors[0].message' <<< "$RECORD_INFO" 2>/dev/null || echo "未知错误")
-            log "❌ [$current_domain] API错误: $ERROR_MSG"
-            continue 
-        fi
-        
-        RECORD_COUNT=$(jq -r '.result | length' <<< "$RECORD_INFO")
-        
-        # 如果记录不存在，直接创建
-        if [ "$RECORD_COUNT" -eq 0 ] || [ "$RECORD_COUNT" = "null" ]; then
-            log "⚠️ 未找到 [$current_domain] 的记录，正在创建..."
-            CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
-            CREATE_RESULT=$(cf_api_request "POST" "dns_records" "$CREATE_DATA")
+        # 循环处理当前 Zone 下的每一个子域名
+        for j in "${!RECORD_NAMES_ARRAY[@]}"; do
+            current_domain="${RECORD_NAMES_ARRAY[$j]}"
+            current_proxied="${PROXIED_ARRAY[$j]:-false}"
             
-            if jq -e '.success' <<< "$CREATE_RESULT" >/dev/null; then
-                log "✅ 创建成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
-            else
-                ERROR_MSG=$(jq -r '.errors[0].message' <<< "$CREATE_RESULT" 2>/dev/null || echo "未知错误")
-                log "❌ 创建失败 [$current_domain]: $ERROR_MSG"
-            fi
-            continue
-        fi
-        
-        # 记录已存在，获取当前的 IP 和 小黄云状态
-        RECORD_ID=$(jq -r '.result[0].id' <<< "$RECORD_INFO")
-        EXISTING_IP=$(jq -r '.result[0].content' <<< "$RECORD_INFO")
-        EXISTING_PROXIED=$(jq -r '.result[0].proxied' <<< "$RECORD_INFO")
-        
-        # 双重校验：不仅检查 IP 是否变化，还检查小黄云状态是否和你在 config 里设定的不一致
-        if [ "$CURRENT_IP" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
-            log "🔄 [$current_domain] IP 和 小黄云状态 均未变化，无需更新"
-        else
-            log "🔄 [$current_domain] 需要更新 (IP: $EXISTING_IP → $CURRENT_IP | 小黄云: $EXISTING_PROXIED → $current_proxied)"
-            UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
-            UPDATE_RESULT=$(cf_api_request "PUT" "dns_records/$RECORD_ID" "$UPDATE_DATA")
+            log "-----------------"
+            log "⏳ 正在检查: $current_domain (小黄云: $current_proxied)"
             
-            if jq -e '.success' <<< "$UPDATE_RESULT" >/dev/null; then
-                log "✅ 更新成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
-            else
-                ERROR_MSG=$(jq -r '.errors[0].message' <<< "$UPDATE_RESULT" 2>/dev/null || echo "未知错误")
-                log "❌ 更新失败 [$current_domain]: $ERROR_MSG"
+            RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$RECORD_TYPE")
+            
+            if ! jq -e '.success' <<< "$RECORD_INFO" >/dev/null; then
+                ERROR_MSG=$(jq -r '.errors[0].message' <<< "$RECORD_INFO" 2>/dev/null || echo "未知错误")
+                log "❌ [$current_domain] API错误: $ERROR_MSG"
+                continue 
             fi
-        fi
+            
+            RECORD_COUNT=$(jq -r '.result | length' <<< "$RECORD_INFO")
+            
+            # 如果记录不存在，直接创建
+            if [ "$RECORD_COUNT" -eq 0 ] || [ "$RECORD_COUNT" = "null" ]; then
+                log "⚠️ 未找到记录，正在创建..."
+                CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+                CREATE_RESULT=$(cf_api_request "POST" "dns_records" "$CREATE_DATA")
+                
+                if jq -e '.success' <<< "$CREATE_RESULT" >/dev/null; then
+                    log "✅ 创建成功 -> $CURRENT_IP"
+                else
+                    ERROR_MSG=$(jq -r '.errors[0].message' <<< "$CREATE_RESULT" 2>/dev/null || echo "未知错误")
+                    log "❌ 创建失败: $ERROR_MSG"
+                fi
+                continue
+            fi
+            
+            # 记录已存在，获取当前的 IP 和 小黄云状态
+            RECORD_ID=$(jq -r '.result[0].id' <<< "$RECORD_INFO")
+            EXISTING_IP=$(jq -r '.result[0].content' <<< "$RECORD_INFO")
+            EXISTING_PROXIED=$(jq -r '.result[0].proxied' <<< "$RECORD_INFO")
+            
+            # 校验是否需要更新
+            if [ "$CURRENT_IP" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
+                log "🔄 无需更新 (IP与状态一致)"
+            else
+                log "🔄 正在更新 (IP: $EXISTING_IP → $CURRENT_IP | 小黄云: $EXISTING_PROXIED → $current_proxied)"
+                UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+                UPDATE_RESULT=$(cf_api_request "PUT" "dns_records/$RECORD_ID" "$UPDATE_DATA")
+                
+                if jq -e '.success' <<< "$UPDATE_RESULT" >/dev/null; then
+                    log "✅ 更新成功"
+                else
+                    ERROR_MSG=$(jq -r '.errors[0].message' <<< "$UPDATE_RESULT" 2>/dev/null || echo "未知错误")
+                    log "❌ 更新失败: $ERROR_MSG"
+                fi
+            fi
+        done
     done
     
-    log "----------------------------------------"
+    log "========================================"
     log "===== DDNS 批量更新任务完成 ====="
 }
 
@@ -258,30 +308,26 @@ check_dependencies() {
     local deps=("curl" "jq")
     local missing_deps=()
 
-    # 1. 检查缺少的依赖
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &> /dev/null; then
             missing_deps+=("$dep")
         fi
     done
 
-    # 2. 如果有缺失，尝试自动安装
     if [ ${#missing_deps[@]} -gt 0 ]; then
         echo "⚠️ 检测到缺少依赖项: ${missing_deps[*]}"
         echo "⏳ 正在尝试自动下载并安装..."
 
-        # 检查是否需要 sudo
         local SUDO=""
         if [ "$EUID" -ne 0 ]; then
             if command -v sudo &> /dev/null; then
                 SUDO="sudo"
             else
-                echo "❌ 错误：当前不是 root 用户且未找到 sudo 命令。请切换到 root 或手动安装: ${missing_deps[*]}"
+                echo "❌ 错误：当前不是 root 用户且未找到 sudo 命令。请手动安装: ${missing_deps[*]}"
                 exit 1
             fi
         fi
 
-        # 根据包管理器安装 (将输出重定向到 /dev/null 保持界面整洁)
         if command -v apt-get &> /dev/null; then
             $SUDO apt-get update -yq >/dev/null 2>&1
             $SUDO apt-get install -yq "${missing_deps[@]}" >/dev/null 2>&1
@@ -298,7 +344,6 @@ check_dependencies() {
             exit 1
         fi
 
-        # 3. 再次验证是否安装成功
         for dep in "${missing_deps[@]}"; do
             if ! command -v "$dep" &> /dev/null; then
                 echo "❌ 错误：自动安装 $dep 失败，请检查网络或手动安装。"
