@@ -110,7 +110,7 @@ setup_cron() {
         local tmp_cron=$(mktemp)
         crontab -l 2>/dev/null | grep -v "cloudflare_ddns" > "$tmp_cron"
         
-        echo "*/5 * * * * $SCRIPT_TARGET >> $LOG_FILE 2>&1" >> "$tmp_cron"
+        echo "*/5 * * * * $SCRIPT_TARGET > /dev/null 2>&1" >> "$tmp_cron"
         echo "✅ 定时更新任务已添加 (频率: 每 5 分钟)"
         
         # 默认选 n (不开启日志清理)
