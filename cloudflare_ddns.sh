@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Cloudflare DDNS 更新脚本 (多域名 + 独立小黄云控制版)
-# 增加了自动识别并安装依赖 (jq, curl) 的功能
 
 CFG_DIR="$HOME/.cloudflare_ddns"
 CONFIG_FILE="$CFG_DIR/config"
