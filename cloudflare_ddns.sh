@@ -119,3 +119,196 @@ init_config() {
     
     mkdir -p "$(dirname "$LOG_FILE")"
     echo "===== DDNS 配置创建于 $(date) =====" > "$LOG_FILE"
+    
+    echo "#!/bin/bash" > "$CONFIG_FILE"
+    echo "# Cloudflare DDNS 配置文件" >> "$CONFIG_FILE"
+    echo "API_TOKEN='$API_TOKEN'" >> "$CONFIG_FILE"
+    echo "ZONE_ID='$ZONE_ID'" >> "$CONFIG_FILE"
+    echo "RECORD_NAME='$RECORD_NAME'" >> "$CONFIG_FILE"
+    echo "RECORD_TYPE='$RECORD_TYPE'" >> "$CONFIG_FILE"
+    echo "TTL='$TTL'" >> "$CONFIG_FILE"
+    echo "PROXIED='$PROXIED'" >> "$CONFIG_FILE"
+    echo "LOG_FILE='$LOG_FILE'" >> "$CONFIG_FILE"
+    
+    chmod 600 "$CONFIG_FILE"
+    
+    echo "──────────────────────────────────────────────────"
+    echo "✅ 配置已保存到: $CONFIG_FILE"
+}
+
+get_ip() {
+    local ip_services
+    local max_retry=3
+    
+    if [ "$RECORD_TYPE" = "A" ]; then
+        ip_services=("https://api.ipify.org" "https://ipv4.icanhazip.com" "https://checkip.amazonaws.com")
+    else
+        ip_services=("https://api64.ipify.org" "https://ipv6.icanhazip.com" "https://v6.ident.me")
+    fi
+    
+    for service in "${ip_services[@]}"; do
+        for ((i=1; i<=max_retry; i++)); do
+            ip=$(curl -${RECORD_TYPE/#A/4} -s --fail --max-time 10 "$service" 2>/dev/null)
+            if [ -n "$ip" ]; then
+                echo "$ip"
+                return 0
+            fi
+            sleep 1
+        done
+    done
+    return 1
+}
+
+cf_api_request() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    local url="https://api.cloudflare.com/client/v4/zones/$ZONE_ID/$endpoint"
+    
+    local curl_cmd="curl -s -X $method '$url' \
+        -H 'Authorization: Bearer $API_TOKEN' \
+        -H 'Content-Type: application/json'"
+    
+    [ -n "$data" ] && curl_cmd+=" --data '$data'"
+    eval "$curl_cmd"
+}
+
+main() {
+    init_config "$@"
+    PROXIED=${PROXIED:-false}
+    
+    log "===== DDNS 批量更新任务开始 ====="
+    
+    # 获取公网IP
+    log "正在获取公网IP地址..." 1
+    CURRENT_IP=$(get_ip)
+    if [ -z "$CURRENT_IP" ]; then
+        log "❌ 错误：无法获取公网IP地址，请检查网络连接"
+        log "===== DDNS 更新失败 ====="
+        return 1
+    fi
+    log "当前公网IP: $CURRENT_IP"
+    
+    # 将域名和代理状态都转换成数组，以支持一一对应
+    RECORD_NAMES_ARRAY=(${RECORD_NAME//,/ })
+    PROXIED_ARRAY=(${PROXIED//,/ })
+    
+    # 循环处理每一个域名
+    for i in "${!RECORD_NAMES_ARRAY[@]}"; do
+        current_domain="${RECORD_NAMES_ARRAY[$i]}"
+        # 获取对应的代理状态，如果没填，默认取 false
+        current_proxied="${PROXIED_ARRAY[$i]:-false}"
+        
+        log "----------------------------------------"
+        log "⏳ 正在处理: $current_domain (小黄云设定: $current_proxied)"
+        
+        RECORD_INFO=$(cf_api_request "GET" "dns_records?name=$current_domain&type=$RECORD_TYPE")
+        
+        if ! jq -e '.success' <<< "$RECORD_INFO" >/dev/null; then
+            ERROR_MSG=$(jq -r '.errors[0].message' <<< "$RECORD_INFO" 2>/dev/null || echo "未知错误")
+            log "❌ [$current_domain] API错误: $ERROR_MSG"
+            continue 
+        fi
+        
+        RECORD_COUNT=$(jq -r '.result | length' <<< "$RECORD_INFO")
+        
+        # 如果记录不存在，直接创建
+        if [ "$RECORD_COUNT" -eq 0 ] || [ "$RECORD_COUNT" = "null" ]; then
+            log "⚠️ 未找到 [$current_domain] 的记录，正在创建..."
+            CREATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+            CREATE_RESULT=$(cf_api_request "POST" "dns_records" "$CREATE_DATA")
+            
+            if jq -e '.success' <<< "$CREATE_RESULT" >/dev/null; then
+                log "✅ 创建成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
+            else
+                ERROR_MSG=$(jq -r '.errors[0].message' <<< "$CREATE_RESULT" 2>/dev/null || echo "未知错误")
+                log "❌ 创建失败 [$current_domain]: $ERROR_MSG"
+            fi
+            continue
+        fi
+        
+        # 记录已存在，获取当前的 IP 和 小黄云状态
+        RECORD_ID=$(jq -r '.result[0].id' <<< "$RECORD_INFO")
+        EXISTING_IP=$(jq -r '.result[0].content' <<< "$RECORD_INFO")
+        EXISTING_PROXIED=$(jq -r '.result[0].proxied' <<< "$RECORD_INFO")
+        
+        # 双重校验：不仅检查 IP 是否变化，还检查小黄云状态是否和你在 config 里设定的不一致
+        if [ "$CURRENT_IP" = "$EXISTING_IP" ] && [ "$current_proxied" = "$EXISTING_PROXIED" ]; then
+            log "🔄 [$current_domain] IP 和 小黄云状态 均未变化，无需更新"
+        else
+            log "🔄 [$current_domain] 需要更新 (IP: $EXISTING_IP → $CURRENT_IP | 小黄云: $EXISTING_PROXIED → $current_proxied)"
+            UPDATE_DATA="{\"type\":\"$RECORD_TYPE\",\"name\":\"$current_domain\",\"content\":\"$CURRENT_IP\",\"ttl\":$TTL,\"proxied\":$current_proxied}"
+            UPDATE_RESULT=$(cf_api_request "PUT" "dns_records/$RECORD_ID" "$UPDATE_DATA")
+            
+            if jq -e '.success' <<< "$UPDATE_RESULT" >/dev/null; then
+                log "✅ 更新成功: $current_domain -> $CURRENT_IP (小黄云: $current_proxied)"
+            else
+                ERROR_MSG=$(jq -r '.errors[0].message' <<< "$UPDATE_RESULT" 2>/dev/null || echo "未知错误")
+                log "❌ 更新失败 [$current_domain]: $ERROR_MSG"
+            fi
+        fi
+    done
+    
+    log "----------------------------------------"
+    log "===== DDNS 批量更新任务完成 ====="
+}
+
+# 自动检查并安装依赖函数
+check_dependencies() {
+    local deps=("curl" "jq")
+    local missing_deps=()
+
+    # 1. 检查缺少的依赖
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            missing_deps+=("$dep")
+        fi
+    done
+
+    # 2. 如果有缺失，尝试自动安装
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo "⚠️ 检测到缺少依赖项: ${missing_deps[*]}"
+        echo "⏳ 正在尝试自动下载并安装..."
+
+        # 检查是否需要 sudo
+        local SUDO=""
+        if [ "$EUID" -ne 0 ]; then
+            if command -v sudo &> /dev/null; then
+                SUDO="sudo"
+            else
+                echo "❌ 错误：当前不是 root 用户且未找到 sudo 命令。请切换到 root 或手动安装: ${missing_deps[*]}"
+                exit 1
+            fi
+        fi
+
+        # 根据包管理器安装 (将输出重定向到 /dev/null 保持界面整洁)
+        if command -v apt-get &> /dev/null; then
+            $SUDO apt-get update -yq >/dev/null 2>&1
+            $SUDO apt-get install -yq "${missing_deps[@]}" >/dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+            $SUDO yum install -yq "${missing_deps[@]}" >/dev/null 2>&1
+        elif command -v dnf &> /dev/null; then
+            $SUDO dnf install -yq "${missing_deps[@]}" >/dev/null 2>&1
+        elif command -v apk &> /dev/null; then
+            $SUDO apk add --no-cache "${missing_deps[@]}" >/dev/null 2>&1
+        elif command -v pacman &> /dev/null; then
+            $SUDO pacman -Sy --noconfirm "${missing_deps[@]}" >/dev/null 2>&1
+        else
+            echo "❌ 错误：未知的系统包管理器，请手动安装依赖: ${missing_deps[*]}"
+            exit 1
+        fi
+
+        # 3. 再次验证是否安装成功
+        for dep in "${missing_deps[@]}"; do
+            if ! command -v "$dep" &> /dev/null; then
+                echo "❌ 错误：自动安装 $dep 失败，请检查网络或手动安装。"
+                exit 1
+            fi
+        done
+        echo "✅ 依赖项 ${missing_deps[*]} 自动安装成功！"
+        echo "──────────────────────────────────────────────────"
+    fi
+}
+
+check_dependencies
+main "$@"
