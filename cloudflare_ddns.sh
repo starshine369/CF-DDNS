@@ -195,10 +195,10 @@ init_config() {
         read -p "  输入 Zone ID: " current_zone_id
         [ -z "$current_zone_id" ] && { echo "  ❌ Zone ID 不能为空，请重新输入。"; continue; }
         
-        read -p "  输入该域名的备注 (如 starshine369.top): " current_remark
+        read -p "  输入该域名的备注 (如 example.top): " current_remark
         current_remark=${current_remark:-"未命名域名_$zone_count"}
         
-        read -p "  输入子域名 (多个用逗号分隔，如 nas.a.com,web.a.com): " current_records
+        read -p "  输入子域名 (多个用逗号分隔，如 nas.example.com,web.example.com): " current_records
         [ -z "$current_records" ] && { echo "  ❌ 子域名不能为空，请重新配置当前 Zone。"; continue; }
         
         read -p "  对应的记录类型 (如 A,AAAA) (默认全为 A): " current_types
