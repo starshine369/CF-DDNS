@@ -61,8 +61,9 @@ delete_config() {
 
 setup_cron() {
     echo "──────────────────────────────────────────────────"
-    read -p "❓ 是否自动配置定时任务 (每5分钟在后台自动执行一次)? [Y/n]: " setup_cron_task
-    setup_cron_task=${setup_cron_task:-Y}
+    # 默认选 y (开启定时任务)
+    read -p "❓ 是否自动配置定时任务 (每5分钟在后台自动执行一次)? (默认: y) [y/n]: " setup_cron_task
+    setup_cron_task=${setup_cron_task:-y}
     
     if [[ "$setup_cron_task" =~ ^[Yy]$ ]]; then
         if ! command -v crontab &> /dev/null; then
@@ -112,8 +113,9 @@ setup_cron() {
         echo "*/5 * * * * $SCRIPT_TARGET >> $LOG_FILE 2>&1" >> "$tmp_cron"
         echo "✅ 定时更新任务已添加 (频率: 每 5 分钟)"
         
-        read -p "❓ 是否配置日志自动清理 (每天凌晨切割日志并清理7天前的记录)? [Y/n]: " setup_log_clean
-        setup_log_clean=${setup_log_clean:-Y}
+        # 默认选 n (不开启日志清理)
+        read -p "❓ 是否配置日志自动清理 (每天凌晨切割日志并清理7天前的记录)? (默认: n) [y/n]: " setup_log_clean
+        setup_log_clean=${setup_log_clean:-n}
         if [[ "$setup_log_clean" =~ ^[Yy]$ ]]; then
             local log_dir=$(dirname "$LOG_FILE")
             local log_base=$(basename "$LOG_FILE")
@@ -167,7 +169,7 @@ init_config() {
     
     clear
     echo "╔══════════════════════════════════════════════════╗"
-    echo "║       Cloudflare DDNS 终极部署向导 (双栈版)      ║"
+    echo "║       Cloudflare DDNS 部署向导 (双栈版)      ║"
     echo "╚══════════════════════════════════════════════════╝"
     echo "提示：此版本支持为每个子域名单独指定解析 IPv4(A) 或 IPv6(AAAA)"
     echo "──────────────────────────────────────────────────"
@@ -195,13 +197,13 @@ init_config() {
         read -p "  输入 Zone ID: " current_zone_id
         [ -z "$current_zone_id" ] && { echo "  ❌ Zone ID 不能为空，请重新输入。"; continue; }
         
-        read -p "  输入该域名的备注 (如 example.top): " current_remark
+        read -p "  输入该域名的备注 (如 example.com): " current_remark
         current_remark=${current_remark:-"未命名域名_$zone_count"}
         
-        read -p "  输入子域名 (多个用逗号分隔，如 nas.example.com,web.example.com): " current_records
+        read -p "  输入子域名 (多个用逗号分隔。如 nas.example.com,web.example.com): " current_records
         [ -z "$current_records" ] && { echo "  ❌ 子域名不能为空，请重新配置当前 Zone。"; continue; }
         
-        read -p "  对应的记录类型 (如 A,AAAA) (默认全为 A): " current_types
+        read -p "  对应的记录类型 (填写 A 或 AAAA，多个用逗号分隔。如 A,AAAA) (默认全为 A): " current_types
         current_types=${current_types:-A}
 
         read -p "  对应的代理状态(小黄云) (如 false,true) (默认全为 false): " current_proxieds
@@ -216,7 +218,9 @@ init_config() {
         echo "  ✅ 第 $zone_count 个主域名 [$current_remark] 配置已记录。"
         
         echo "──────────────────────────────────────────────────"
-        read -p "❓ 是否需要继续添加另一个主域名(Zone ID)? [y/N]: " add_more
+        # 默认选 n (不继续添加)
+        read -p "❓ 是否需要继续添加另一个主域名(Zone ID)? (默认: n) [y/n]: " add_more
+        add_more=${add_more:-n}
         case "$add_more" in
             [yY][eE][sS]|[yY]) ((zone_count++)) ;;
             *) break ;;
